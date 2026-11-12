@@ -1,48 +1,38 @@
 import axios from 'axios'
 
-// `withCredentials: true` sends the httpOnly auth cookie with every request.
-// Because the browser also does that for forged cross-site requests, every
-// state-changing request additionally carries a CSRF token in a header, which a
-// malicious site can neither read nor set.
+// withCredentials sends the httpOnly auth cookie. Because the browser also sends it
+// on cross-site requests, every state-changing request additionally carries a CSRF
+// token header that a foreign site cannot read or forge.
 export const api = axios.create({
   baseURL: 'http://localhost:4000/api',
   withCredentials: true
 })
 
-const SAFE = ['get', 'head', 'options']
-const PRE_AUTH = ['/auth/login', '/auth/register']
 let csrfToken = null
 
-async function getCsrfToken() {
-  if (!csrfToken) {
-    const res = await api.get('/csrf-token')
-    csrfToken = res.data.csrfToken
-  }
+export async function fetchCsrfToken() {
+  const { data } = await api.get('/csrf-token')
+  csrfToken = data.csrfToken
   return csrfToken
 }
 
+const SAFE_METHODS = ['get', 'head', 'options']
+const isPreAuth = (url = '') => /\/auth\/(login|register)$/.test(url)
+const isAuthChange = (url = '') => /\/auth\/(login|register|logout)$/.test(url)
+
+// Attach the token to every mutating request (login/register are exempt: no session yet)
 api.interceptors.request.use(async (config) => {
   const method = (config.method || 'get').toLowerCase()
-  const url = config.url || ''
-  if (SAFE.includes(method) || PRE_AUTH.some((p) => url.includes(p))) return config
-  config.headers['x-csrf-token'] = await getCsrfToken()
+  if (!SAFE_METHODS.includes(method) && !isPreAuth(config.url)) {
+    if (!csrfToken) await fetchCsrfToken()
+    config.headers['x-csrf-token'] = csrfToken
+  }
   return config
 })
 
-// The token is bound to the session, so drop it whenever the session changes.
-api.interceptors.response.use(
-  (res) => {
-    const url = res.config?.url || ''
-    if (PRE_AUTH.some((p) => url.includes(p)) || url.includes('/auth/logout')) csrfToken = null
-    return res
-  },
-  async (err) => {
-    const cfg = err.config
-    if (err.response?.status === 403 && /csrf/i.test(err.response?.data?.message || '') && cfg && !cfg._csrfRetried) {
-      cfg._csrfRetried = true
-      csrfToken = null
-      return api(cfg)
-    }
-    throw err
-  }
-)
+// The token is bound to the session cookie. After login/register/logout the session
+// changes, so drop the cached token; the next write fetches a fresh one.
+api.interceptors.response.use((res) => {
+  if (isAuthChange(res.config?.url)) csrfToken = null
+  return res
+})
