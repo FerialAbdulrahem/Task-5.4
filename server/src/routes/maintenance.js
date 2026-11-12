@@ -14,7 +14,6 @@ const router = Router();
 // Reading is public; writing requires a logged-in user.
 //
 // Protected against CSRF (global csrf-csrf middleware in app.js) and DoS (rate limiter below).
-router.use(maintenanceLimiter);
 router.get('/', getAllRequests);
 router.get('/:id', getRequest);
 router.post('/', requireAuth, createRequest);
